@@ -1,0 +1,26 @@
+# Builds a portable issuer web server for Ubuntu 24.04 x86_64.
+#
+# The NFC tool binaries (pre_personalize, personalize, read_personalized)
+# are compiled separately from c/ with site-specific key config and are not
+# included here.
+#
+# Use issuer/build.sh to build and extract in one step.
+# To build manually from repo root:
+#   podman build -f issuer/Containerfile -t nfc-lock-issuer .
+
+FROM ubuntu:24.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    binutils \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY issuer/requirements.txt .
+RUN pip3 install --break-system-packages pyinstaller -r requirements.txt
+
+COPY issuer/issuer.py .
+COPY issuer/static/ static/
+
+RUN pyinstaller --onefile --add-data "static:static" --name issuer issuer.py

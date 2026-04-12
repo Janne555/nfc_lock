@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>NFC Card Issuer</title>
+  <style>
+    body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; }
+    h2 { margin-top: 2em; }
+    button { padding: 10px 20px; font-size: 16px; cursor: pointer; }
+    input[type=text] { padding: 8px; font-size: 16px; width: 200px; margin-right: 8px; }
+    #output { background: #f0f0f0; padding: 15px; white-space: pre-wrap; min-height: 60px; font-family: monospace; }
+    #output.ok { border-left: 4px solid green; }
+    #output.error { border-left: 4px solid red; }
+    #output.running { border-left: 4px solid grey; color: grey; }
+  </style>
+</head>
+<body>
+  <h1>NFC Card Issuer</h1>
+
+  <h2>Read Card</h2>
+  <p>Tap card, then click:</p>
+  <button onclick="run('read')">Read Card</button>
+
+  <h2>Pre-personalize</h2>
+  <p>Tap a blank card, then click:</p>
+  <button onclick="run('prepersonalize')">Pre-personalize</button>
+
+  <h2>Personalize</h2>
+  <p>Tap a pre-personalized card, enter the member ID, then click:</p>
+  <input type="text" id="mid" placeholder="0xdeadbeef">
+  <button onclick="run('personalize')">Personalize</button>
+
+  <h2>Output</h2>
+  <div id="output">Ready.</div>
+
+  <script>
+    async function run(command) {
+      const output = document.getElementById('output');
+      output.className = 'running';
+      output.textContent = 'Running\u2026 (waiting for card)';
+
+      const body = new FormData();
+      if (command === 'personalize') {
+        const mid = document.getElementById('mid').value.trim();
+        if (!mid) { output.className = 'error'; output.textContent = 'Enter a member ID first.'; return; }
+        body.append('mid', mid);
+      }
+
+      try {
+        const resp = await fetch('/run/' + command, { method: 'POST', body });
+        const data = await resp.json();
+        output.className = data.ok ? 'ok' : 'error';
+        output.textContent = data.error
+          || [data.stdout, data.stderr].filter(Boolean).join('\n').trim()
+          || '(no output)';
+      } catch (e) {
+        output.className = 'error';
+        output.textContent = 'Request failed: ' + e;
+      }
+    }
+  </script>
+</body>
+</html>
