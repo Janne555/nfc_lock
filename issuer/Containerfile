@@ -1,14 +1,58 @@
-# Builds a portable issuer web server for Ubuntu 24.04 x86_64.
+# Builds portable binaries for Ubuntu 24.04 x86_64:
+#   pre_personalize   \
+#   personalize        > NFC card tools  (stage: c-builder)
+#   read_personalized /
+#   issuer            - Python web server (stage: py-builder)
 #
-# The NFC tool binaries (pre_personalize, personalize, read_personalized)
-# are compiled separately from c/ with site-specific key config and are not
-# included here.
+# Requires c/dumb_node_config.c, c/smart_node_config.c, and
+# c/pre-personalize_config.c to be present before building (site-specific keys).
 #
-# Use issuer/build.sh to build and extract in one step.
+# Use issuer/build.sh to build all targets and extract them in one step.
 # To build manually from repo root:
-#   podman build -f issuer/Containerfile -t nfc-lock-issuer .
+#   podman build --target c-builder  -f issuer/Containerfile -t nfc-lock-c-builder .
+#   podman build --target py-builder -f issuer/Containerfile -t nfc-lock-py-builder .
 
-FROM ubuntu:24.04
+FROM ubuntu:24.04 AS c-builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    pkg-config \
+    libnfc-dev \
+    libfreefare-dev \
+    libssl-dev \
+    libsodium-dev \
+    libkrb5-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+COPY c/ c/
+
+# Compile the three NFC tools by invoking gcc directly so we can control
+# link flags without modifying c/Makefile.
+#
+# Static-link NFC/crypto libs for portability; keep libc/pthread dynamic
+# (static glibc causes IFUNC issues on Linux).
+#
+# OpenSSL on Ubuntu 24.04 pulls Kerberos in via pkg-config --static, but
+# Ubuntu doesn't ship static Kerberos .a files, so filter them out and
+# link them dynamically instead.
+RUN \
+    CFLAGS="-g -Wall -std=gnu99 -fstack-protector -pthread -I c/"; \
+    DYN="-lgssapi_krb5 -lkrb5 -lk5crypto -lkrb5support -lcom_err -lm -lrt -lpthread -ldl"; \
+    ALL=$(pkg-config --libs --static libfreefare openssl); \
+    STAT=$(echo "$ALL" | tr ' ' '\n' | grep -vE '^(-lgssapi_krb5|-lkrb5|-lk5crypto|-lkrb5support|-lcom_err|-lm|-lrt|-lpthread|-ldl)$' | tr '\n' ' '); \
+    LIBS="-Wl,-Bstatic $STAT -Wl,-Bdynamic $DYN"; \
+    COMMON="c/log.c c/helpers.c c/keydiversification.c c/smart_node_config.c c/dumb_node_config.c"; \
+    gcc $CFLAGS $COMMON c/pre-personalize_config.c c/pre_personalize.c $LIBS -o pre_personalize; \
+    gcc $CFLAGS $COMMON c/pre-personalize_config.c c/personalize.c      $LIBS -o personalize; \
+    gcc $CFLAGS $COMMON c/read_personalized.c                           $LIBS -o read_personalized
+
+# Show remaining dynamic deps — should be only libc, libpthread, librt, libkrb5
+RUN ldd pre_personalize personalize read_personalized
+
+# ---------------------------------------------------------------------------
+
+FROM ubuntu:24.04 AS py-builder
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3 \
