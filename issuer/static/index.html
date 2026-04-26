@@ -4,58 +4,240 @@
   <meta charset="UTF-8">
   <title>NFC Card Issuer</title>
   <style>
-    body { font-family: sans-serif; max-width: 600px; margin: 40px auto; padding: 0 20px; }
-    h2 { margin-top: 2em; }
-    button { padding: 10px 20px; font-size: 16px; cursor: pointer; }
-    input[type=text] { padding: 8px; font-size: 16px; width: 200px; margin-right: 8px; }
-    #output { background: #f0f0f0; padding: 15px; white-space: pre-wrap; min-height: 60px; font-family: monospace; }
-    #output.ok { border-left: 4px solid green; }
-    #output.error { border-left: 4px solid red; }
-    #output.running { border-left: 4px solid grey; color: grey; }
+    * { box-sizing: border-box; }
+    body { font-family: sans-serif; max-width: 700px; margin: 40px auto; padding: 0 20px; color: #222; }
+    h2 { margin-top: 1.8em; margin-bottom: 0.3em; }
+    p  { margin: 0.3em 0 0.8em; color: #555; }
+
+    .row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+    input[type=text] { padding: 8px 10px; font-size: 15px; width: 180px; border: 1px solid #ccc; border-radius: 4px; }
+
+    button { padding: 9px 20px; font-size: 15px; border: none; border-radius: 4px; cursor: pointer; }
+    .btn-start          { background: #2a7; color: #fff; }
+    .btn-start:disabled { background: #aaa; cursor: default; }
+    .btn-stop           { background: #c33; color: #fff; }
+
+    #data-panel { display: none; background: #f5f5f5; border: 1px solid #ddd; border-radius: 6px; padding: 14px 18px; margin: 2em 0 1em; }
+    #data-panel h3 { margin: 0 0 10px; font-size: 0.85em; color: #666; text-transform: uppercase; letter-spacing: 0.06em; }
+    .data-row   { display: none; align-items: center; gap: 8px; margin: 5px 0; }
+    .data-label { font-family: monospace; font-weight: bold; width: 80px; color: #555; font-size: 13px; }
+    .data-value { font-family: monospace; font-size: 14px; flex: 1; word-break: break-all; }
+    .btn-copy   { padding: 3px 10px; font-size: 12px; background: #e8e8e8; border: 1px solid #ccc; border-radius: 3px; }
+    .btn-copy:active { background: #d0d0d0; }
+
+    #log { background: #1a1a1a; color: #ddd; padding: 14px; font-family: monospace; font-size: 13px;
+           max-height: 420px; overflow-y: auto; white-space: pre-wrap; border-radius: 6px; min-height: 60px; }
+    .l-err { color: #f77; }
+    .l-ok  { color: #7d7; }
+    .l-tag { color: #7cf; font-weight: bold; padding-top: 8px; border-top: 1px solid #333; margin-top: 6px; }
+    .l-dim { color: #666; }
   </style>
 </head>
 <body>
   <h1>NFC Card Issuer</h1>
 
   <h2>Read Card</h2>
-  <p>Tap card, then click:</p>
-  <button onclick="run('read')">Read Card</button>
+  <p>Tap card to reader, then start:</p>
+  <div class="row">
+    <button id="read-btn" class="btn-start" onclick="toggle('read')">Start</button>
+  </div>
 
   <h2>Pre-personalize</h2>
-  <p>Tap a blank card, then click:</p>
-  <button onclick="run('prepersonalize')">Pre-personalize</button>
+  <p>Tap blank (factory) card, then start:</p>
+  <div class="row">
+    <button id="prepersonalize-btn" class="btn-start" onclick="toggle('prepersonalize')">Start</button>
+  </div>
 
   <h2>Personalize</h2>
-  <p>Tap a pre-personalized card, enter the member ID, then click:</p>
-  <input type="text" id="mid" placeholder="0xdeadbeef">
-  <button onclick="run('personalize')">Personalize</button>
+  <p>Enter member ID, tap pre-personalized card, then start:</p>
+  <div class="row">
+    <input type="text" id="mid" placeholder="0xdeadbeef">
+    <button id="personalize-btn" class="btn-start" onclick="toggle('personalize')">Start</button>
+  </div>
+
+  <div id="data-panel">
+    <h3>Card Data</h3>
+    <div id="row-taguid" class="data-row">
+      <span class="data-label">Tag UID</span>
+      <span class="data-value" id="val-taguid"></span>
+      <button class="btn-copy" onclick="copyVal('val-taguid')">Copy</button>
+    </div>
+    <div id="row-uid" class="data-row">
+      <span class="data-label">Real UID</span>
+      <span class="data-value" id="val-uid"></span>
+      <button class="btn-copy" onclick="copyVal('val-uid')">Copy</button>
+    </div>
+    <div id="row-mid" class="data-row">
+      <span class="data-label">MID</span>
+      <span class="data-value" id="val-mid"></span>
+      <button class="btn-copy" onclick="copyVal('val-mid')">Copy</button>
+    </div>
+    <div id="row-acl" class="data-row">
+      <span class="data-label">ACL</span>
+      <span class="data-value" id="val-acl"></span>
+      <button class="btn-copy" onclick="copyVal('val-acl')">Copy</button>
+    </div>
+  </div>
 
   <h2>Output</h2>
-  <div id="output">Ready.</div>
+  <div id="log"></div>
 
   <script>
-    async function run(command) {
-      const output = document.getElementById('output');
-      output.className = 'running';
-      output.textContent = 'Running\u2026 (waiting for card)';
+    const CMDS = ['read', 'prepersonalize', 'personalize'];
+    let activeCmd = null;
+    let es = null;
+    let lines = [];
 
-      const body = new FormData();
-      if (command === 'personalize') {
-        const mid = document.getElementById('mid').value.trim();
-        if (!mid) { output.className = 'error'; output.textContent = 'Enter a member ID first.'; return; }
-        body.append('mid', mid);
+    function toggle(cmd) {
+      activeCmd === cmd ? doStop() : doStart(cmd);
+    }
+
+    function doStart(cmd) {
+      const mid = cmd === 'personalize' ? document.getElementById('mid').value.trim() : '';
+      if (cmd === 'personalize' && !mid) {
+        logAppend('Enter a member ID first.', 'l-err');
+        return;
       }
 
+      if (es) { es.close(); es = null; }
+      lines = [];
+      document.getElementById('log').innerHTML = '';
+      clearData();
+      setActive(cmd);
+
+      const url = '/stream/' + cmd + (mid ? '?mid=' + encodeURIComponent(mid) : '');
+      es = new EventSource(url);
+
+      es.onmessage = function(e) {
+        const msg = JSON.parse(e.data);
+        if (msg.done) {
+          setActive(null);
+          es.close(); es = null;
+          logAppend('— stopped —', 'l-dim');
+          return;
+        }
+        lines.push(msg.line);
+        logAppend(msg.line, lineClass(msg.line));
+        refreshData();
+      };
+
+      es.onerror = function() {
+        setActive(null);
+        if (es) { es.close(); es = null; }
+        logAppend('— connection lost —', 'l-err');
+      };
+    }
+
+    async function doStop() {
+      if (es) { es.close(); es = null; }
+      setActive(null);
+      logAppend('— stopped —', 'l-dim');
+      await fetch('/stop', { method: 'POST' });
+    }
+
+    function setActive(cmd) {
+      activeCmd = cmd;
+      CMDS.forEach(c => {
+        const btn = document.getElementById(c + '-btn');
+        if (cmd === null) {
+          btn.className = 'btn-start';
+          btn.textContent = 'Start';
+          btn.disabled = false;
+        } else if (c === cmd) {
+          btn.className = 'btn-stop';
+          btn.textContent = 'Stop';
+          btn.disabled = false;
+        } else {
+          btn.className = 'btn-start';
+          btn.textContent = 'Start';
+          btn.disabled = true;
+        }
+      });
+    }
+
+    function lineClass(line) {
+      if (/^Found DESFire tag/i.test(line))      return 'l-tag';
+      if (/^OK:/i.test(line))                    return 'l-ok';
+      if (/^ERROR|Can't|failed/i.test(line))     return 'l-err';
+      return '';
+    }
+
+    function logAppend(text, cls) {
+      const log = document.getElementById('log');
+      const atBottom = log.scrollHeight - log.clientHeight <= log.scrollTop + 4;
+      const d = document.createElement('div');
+      if (cls) d.className = cls;
+      d.textContent = text;
+      log.appendChild(d);
+      if (atBottom) log.scrollTop = log.scrollHeight;
+    }
+
+    // ---- Structured data ----
+
+    const FIELDS = ['taguid', 'uid', 'mid', 'acl'];
+
+    function clearData() {
+      document.getElementById('data-panel').style.display = 'none';
+      FIELDS.forEach(f => {
+        document.getElementById('row-' + f).style.display = 'none';
+        document.getElementById('val-' + f).textContent = '';
+      });
+    }
+
+    function refreshData() {
+      const d = parseData(lines);
+      let any = false;
+      FIELDS.forEach(f => {
+        if (d[f] !== undefined) {
+          document.getElementById('row-' + f).style.display = 'flex';
+          document.getElementById('val-' + f).textContent = d[f];
+          any = true;
+        }
+      });
+      if (any) document.getElementById('data-panel').style.display = 'block';
+    }
+
+    function parseData(lines) {
+      // Process lines in order; reset card-specific fields on each new card detection
+      // so the panel always reflects the most recently processed card.
+      let d = {};
+      for (const line of lines) {
+        // New card — reset and capture randomised tag UID
+        const tagM = line.match(/Found DESFire tag (\S+)/);
+        if (tagM) { d = { taguid: tagM[1] }; continue; }
+
+        // Real UID appears on the same line as "Getting real UID, " (no \n between printfs)
+        const uidM = line.match(/Getting real UID.*?([0-9A-Fa-f]{2}(?:[:\-][0-9A-Fa-f]{2}){3,})/);
+        if (uidM) d.uid = uidM[1];
+
+        // read_personalized: "Reading member-id file, done, got 0x..."
+        if (line.includes('member-id') && line.includes('got')) {
+          const m = line.match(/got (0x[0-9a-fA-F]+)/);
+          if (m) d.mid = m[1];
+        }
+
+        // read_personalized: "Reading ACL file, done, got 0x..."
+        if (line.includes('ACL file') && line.includes('got')) {
+          const m = line.match(/got (0x[0-9a-fA-F]+)/);
+          if (m) d.acl = m[1];
+        }
+
+        // personalize summary block
+        const sumUid = line.match(/^\s+UID:\s+(\S+)/);
+        if (sumUid) d.uid = sumUid[1];
+
+        const sumMid = line.match(/^\s+MID:\s+(0x[0-9a-fA-F]+)/);
+        if (sumMid) d.mid = sumMid[1];
+      }
+      return d;
+    }
+
+    async function copyVal(id) {
+      const text = document.getElementById(id).textContent;
       try {
-        const resp = await fetch('/run/' + command, { method: 'POST', body });
-        const data = await resp.json();
-        output.className = data.ok ? 'ok' : 'error';
-        output.textContent = data.error
-          || [data.stdout, data.stderr].filter(Boolean).join('\n').trim()
-          || '(no output)';
+        await navigator.clipboard.writeText(text);
       } catch (e) {
-        output.className = 'error';
-        output.textContent = 'Request failed: ' + e;
+        prompt('Copy:', text);
       }
     }
   </script>

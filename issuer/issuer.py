@@ -1,15 +1,14 @@
 import asyncio
+import json
 import os
-import subprocess
 import sys
-from concurrent.futures import ThreadPoolExecutor
 
 import tornado.ioloop
 import tornado.web
 import yaml
 
 config = {}
-executor = ThreadPoolExecutor(max_workers=1)
+active_proc = None
 
 
 def resource_path(relative):
@@ -26,30 +25,20 @@ def nfc_args():
     return [device] if device else []
 
 
-def _clean_env():
+def clean_env():
     env = os.environ.copy()
     env.pop('LD_LIBRARY_PATH', None)
     return env
 
 
-def run_process(cmd, stdin, timeout):
-    print(f'[issuer] running: {cmd}', flush=True)
+async def kill_proc(proc):
+    if proc is None or proc.returncode is not None:
+        return
+    proc.terminate()
     try:
-        r = subprocess.run(cmd, input=stdin, capture_output=True, timeout=timeout, env=_clean_env())
-        stdout = r.stdout.decode(errors='replace')
-        stderr = r.stderr.decode(errors='replace')
-        print(f'[issuer] exit={r.returncode} stdout={stdout!r} stderr={stderr!r}', flush=True)
-        return {
-            'stdout': stdout,
-            'stderr': stderr,
-            'ok': r.returncode == 0,
-        }
-    except subprocess.TimeoutExpired:
-        print('[issuer] timed out', flush=True)
-        return {'error': 'Timed out — is a card present?', 'ok': False}
-    except FileNotFoundError:
-        print(f'[issuer] binary not found: {cmd[0]}', flush=True)
-        return {'error': f'Binary not found: {cmd[0]}', 'ok': False}
+        await asyncio.wait_for(proc.wait(), timeout=3)
+    except asyncio.TimeoutError:
+        proc.kill()
 
 
 class IndexHandler(tornado.web.RequestHandler):
@@ -58,35 +47,92 @@ class IndexHandler(tornado.web.RequestHandler):
             self.write(f.read())
 
 
-class RunHandler(tornado.web.RequestHandler):
-    async def post(self, command):
-        timeout = config.get('timeout', 30)
+class StreamHandler(tornado.web.RequestHandler):
+    async def get(self, command):
+        global active_proc
+
+        await kill_proc(active_proc)
+        active_proc = None
 
         if command == 'read':
-            cmd, stdin = [bin_path('read_personalized')] + nfc_args(), None
+            cmd = [bin_path('read_personalized')] + nfc_args()
+            stdin_data = None
         elif command == 'prepersonalize':
-            cmd, stdin = [bin_path('pre_personalize')] + nfc_args(), None
+            cmd = [bin_path('pre_personalize')] + nfc_args()
+            stdin_data = None
         elif command == 'personalize':
             mid = self.get_argument('mid', '').strip()
             if not mid:
-                self.write({'error': 'mid is required', 'ok': False})
+                self.set_status(400)
+                self.write('mid required')
                 return
             cmd = [bin_path('personalize')] + nfc_args()
-            stdin = (mid + '\n').encode()
+            stdin_data = (mid + '\n').encode()
         else:
             self.set_status(400)
-            self.write({'error': 'unknown command', 'ok': False})
             return
 
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(executor, run_process, cmd, stdin, timeout)
-        self.write(result)
+        self.set_header('Content-Type', 'text/event-stream')
+        self.set_header('Cache-Control', 'no-cache')
+        self.set_header('X-Accel-Buffering', 'no')
+
+        print(f'[issuer] starting: {cmd}', flush=True)
+
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdin=asyncio.subprocess.PIPE if stdin_data else asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.STDOUT,
+            env=clean_env(),
+        )
+        active_proc = proc
+
+        if stdin_data:
+            proc.stdin.write(stdin_data)
+            await proc.stdin.drain()
+            proc.stdin.close()
+
+        try:
+            async for raw in proc.stdout:
+                line = raw.decode(errors='replace').rstrip()
+                self.write(f'data: {json.dumps({"line": line})}\n\n')
+                await self.flush()
+        except Exception as e:
+            print(f'[issuer] stream error: {e}', flush=True)
+        finally:
+            await proc.wait()
+            print(f'[issuer] exited: {proc.returncode}', flush=True)
+            if active_proc is proc:
+                active_proc = None
+
+        try:
+            self.write(f'data: {json.dumps({"done": True})}\n\n')
+            await self.flush()
+        except Exception:
+            pass
+
+    def on_connection_close(self):
+        global active_proc
+        if active_proc and active_proc.returncode is None:
+            print('[issuer] client disconnected, stopping process', flush=True)
+            active_proc.terminate()
+            active_proc = None
+
+
+class StopHandler(tornado.web.RequestHandler):
+    async def post(self):
+        global active_proc
+        proc = active_proc
+        active_proc = None
+        await kill_proc(proc)
+        self.write({'ok': True})
 
 
 def make_app():
     return tornado.web.Application([
         (r'/', IndexHandler),
-        (r'/run/(read|prepersonalize|personalize)', RunHandler),
+        (r'/stream/(read|prepersonalize|personalize)', StreamHandler),
+        (r'/stop', StopHandler),
     ])
 
 
