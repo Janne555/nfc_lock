@@ -26,9 +26,15 @@ def nfc_args():
     return [device] if device else []
 
 
+def _clean_env():
+    env = os.environ.copy()
+    env.pop('LD_LIBRARY_PATH', None)
+    return env
+
+
 def run_process(cmd, stdin, timeout):
     try:
-        r = subprocess.run(cmd, input=stdin, capture_output=True, timeout=timeout)
+        r = subprocess.run(cmd, input=stdin, capture_output=True, timeout=timeout, env=_clean_env())
         return {
             'stdout': r.stdout.decode(errors='replace'),
             'stderr': r.stderr.decode(errors='replace'),
