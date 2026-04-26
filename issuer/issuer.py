@@ -33,16 +33,22 @@ def _clean_env():
 
 
 def run_process(cmd, stdin, timeout):
+    print(f'[issuer] running: {cmd}', flush=True)
     try:
         r = subprocess.run(cmd, input=stdin, capture_output=True, timeout=timeout, env=_clean_env())
+        stdout = r.stdout.decode(errors='replace')
+        stderr = r.stderr.decode(errors='replace')
+        print(f'[issuer] exit={r.returncode} stdout={stdout!r} stderr={stderr!r}', flush=True)
         return {
-            'stdout': r.stdout.decode(errors='replace'),
-            'stderr': r.stderr.decode(errors='replace'),
+            'stdout': stdout,
+            'stderr': stderr,
             'ok': r.returncode == 0,
         }
     except subprocess.TimeoutExpired:
+        print('[issuer] timed out', flush=True)
         return {'error': 'Timed out — is a card present?', 'ok': False}
     except FileNotFoundError:
+        print(f'[issuer] binary not found: {cmd[0]}', flush=True)
         return {'error': f'Binary not found: {cmd[0]}', 'ok': False}
 
 
