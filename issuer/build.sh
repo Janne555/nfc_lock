@@ -10,7 +10,8 @@
 #   read_personalized /
 #   issuer            - self-contained Python web server (PyInstaller bundle)
 #
-# Requires podman (or docker — replace 'podman' with 'docker' throughout).
+# Requires docker or podman. On Apple Silicon, --platform linux/amd64 ensures
+# the output binaries are x86-64 Linux regardless of the host architecture.
 #
 # Before running, ensure your site-specific key config files exist in c/:
 #   c/dumb_node_config.c
@@ -24,23 +25,32 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 OUTPUT_DIR="${1:-$SCRIPT_DIR}"
 CONTAINERFILE="$SCRIPT_DIR/Containerfile"
 
+if command -v docker &>/dev/null; then
+    DOCKER=docker
+elif command -v podman &>/dev/null; then
+    DOCKER=podman
+else
+    echo "error: neither docker nor podman found" >&2
+    exit 1
+fi
+
 extract() {
     local image="$1" src="$2" dst="$3"
     local id
-    id=$(podman create "$image")
-    podman cp "$id:$src" "$dst"
-    podman rm "$id" > /dev/null
+    id=$($DOCKER create "$image")
+    $DOCKER cp "$id:$src" "$dst"
+    $DOCKER rm "$id" > /dev/null
 }
 
 echo "==> Building NFC card tools (pre_personalize, personalize, read_personalized)..."
-podman build -f "$CONTAINERFILE" --target c-builder -t nfc-lock-c-builder "$REPO_ROOT"
+$DOCKER build -f "$CONTAINERFILE" --platform linux/amd64 --target c-builder -t nfc-lock-c-builder "$REPO_ROOT"
 for tool in pre_personalize personalize read_personalized; do
     extract nfc-lock-c-builder "/build/$tool" "$OUTPUT_DIR/$tool"
     echo "    -> $OUTPUT_DIR/$tool"
 done
 
 echo "==> Building Python web server (issuer)..."
-podman build -f "$CONTAINERFILE" --target py-builder -t nfc-lock-py-builder "$REPO_ROOT"
+$DOCKER build -f "$CONTAINERFILE" --platform linux/amd64 --target py-builder -t nfc-lock-py-builder "$REPO_ROOT"
 extract nfc-lock-py-builder /build/dist/issuer "$OUTPUT_DIR/issuer"
 echo "    -> $OUTPUT_DIR/issuer"
 

@@ -62,3 +62,9 @@ docs/_build/
 
 # PyBuilder
 target/
+
+issuer/issuer
+issuer/personalize
+issuer/pre_personalize
+issuer/read_personalized
+
